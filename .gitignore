@@ -3,5 +3,6 @@
 *.bat
 *.o
 *.cpp
+*.txt
 
 !main.cpp
