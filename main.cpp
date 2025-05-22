@@ -5,7 +5,7 @@
 #include <memory.h>
 #include <string.h>
 
-static HANDLE hCtrlEvent = NULL;
+static HANDLE hCtrlEvent = NULL, hEvent = NULL;
 BOOL WINAPI ConsoleHandler(DWORD dwCtrlType) {
 	// 콘솔 앱에서 종료 이벤트가 발생할 때 실행된다.
 	// 1. Ctrl+C(CTRL_C_EVENT)
@@ -20,6 +20,7 @@ BOOL WINAPI ConsoleHandler(DWORD dwCtrlType) {
 		case CTRL_SHUTDOWN_EVENT:
 			printf("\nThe program is terminating. Resources and memory are being cleaned up.\n");
 			SetEvent(hCtrlEvent);
+			SetEvent(hEvent);
 			return TRUE;
 		default:
 			return FALSE;
@@ -47,7 +48,7 @@ void GetEventMessageFromDll(DWORD MessageID, const char* Message) {
 			MessageID,
 			0, Buffer, sizeof(Buffer),
 			NULL
-		);
+			);
 
 	if(dwMessageSize){
 		printf("Event ID: %d\nMessage: %s\n", MessageID, Buffer);
@@ -72,16 +73,17 @@ int main(){
 	HANDLE hEventLog = OpenEventLog(NULL, "System");
 
 	// 자동, 비신호
-	HANDLE hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-	
+	hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+
 	BYTE Buffer[0x1000],
-		*pBuffer = (BYTE*)malloc(0x1000);
+	*pBuffer = (BYTE*)malloc(0x1000);
 
 	DWORD ret = 0,
+		  CtrlRet = 0,
 		  dwRead = 0,
 		  dwNeeded = 0,
 		  LastRecordNumber = 0;
-	
+
 	BOOL bTrue = ReadEventLog(hEventLog, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_BACKWARDS_READ, 0, Buffer, sizeof(Buffer), &dwRead, &dwNeeded);
 	if(bTrue){ LastRecordNumber = ((EVENTLOGRECORD*)Buffer)->RecordNumber; }
 
@@ -93,7 +95,8 @@ int main(){
 		}
 
 		ret = WaitForSingleObject(hEvent, INFINITE);
-		if(ret == WAIT_OBJECT_0){
+		CtrlRet = WaitForSingleObject(hCtrlEvent, 0);
+		if(CtrlRet == WAIT_TIMEOUT && ret == WAIT_OBJECT_0){
 			printf("New Event Log Detected\n");
 
 			// Read Log
@@ -104,7 +107,7 @@ int main(){
 						0, pBuffer, sizeof(BYTE) * 0x1000,
 						&dwRead,
 						&dwNeeded
-				);
+						);
 
 				if(!bTrue && GetLastError() == ERROR_INSUFFICIENT_BUFFER){
 					free(pBuffer);
@@ -113,13 +116,13 @@ int main(){
 				}
 
 				EVENTLOGRECORD* pRecord = (EVENTLOGRECORD*)pBuffer;
-				while((BYTE*)pRecord < (pBuffer + dwRead)){
+				while(WaitForSingleObject(hCtrlEvent, 0) == WAIT_TIMEOUT && ((BYTE*)pRecord < (pBuffer + dwRead))){
 					if(pRecord->Length == 0){ printf("Invalid Record Length\n"); break; }
 
 					if(pRecord->RecordNumber > LastRecordNumber){
 						// UNIX Timestamp: 1970.01.01
 						ULONGLONG TimeOffset = pRecord->TimeGenerated * 10000000ULL + (369.0 * 365.2422 * 24.0 * 60.0 * 60.0 * 10000000.0);
-						
+
 						// 1601.01.01
 						FILETIME ft;
 						SYSTEMTIME st;
@@ -221,7 +224,7 @@ int main(){
 							{1102,	"Audit log cleared."},
 							{0,		"Unknown event ID."} // Default value
 						};
-						
+
 						const char* Description = NULL;
 						for(int i=0; i<sizeof(EventTable) / sizeof(EventTable[0]); i++){
 							if(EventTable[i].ID == pRecord->EventID){
@@ -249,8 +252,37 @@ int main(){
 				}
 			}
 		}else{
-			printf("Wait Failed: %d", GetLastError());
-			break;
+			if(CtrlRet == WAIT_OBJECT_0){ break; }
+			if(ret == WAIT_TIMEOUT){ continue; }
+			if(ret == WAIT_FAILED){
+				DWORD dwError = GetLastError();
+
+				switch (dwError) {
+					case ERROR_INVALID_HANDLE:
+						printf("ERROR_INVALID_HANDLE: %d\n", dwError);
+						break;
+
+					case ERROR_ACCESS_DENIED:
+						printf("ERROR_ACCESS_DENIED: %d\n", dwError);
+						break;
+
+					case ERROR_NOT_ENOUGH_MEMORY:
+						printf("ERROR_NOT_ENOUGH_MEMORY: %d\n", dwError);
+						break;
+
+					case ERROR_OPERATION_ABORTED:
+						printf("ERROR_OPERATION_ABORTED: %d\n", dwError);
+						break;
+
+					case ERROR_INVALID_PARAMETER:
+						printf("ERROR_INVALID_PARAMETER: %d\n", dwError);
+						break;
+
+					default:
+						printf("unexpected error: %d\n", dwError);
+						break;
+				}
+			}
 		}
 	}
 
@@ -259,5 +291,7 @@ int main(){
 	CloseEventLog(hEventLog);
 	CloseHandle(hCtrlEvent);
 
+	printf("\n\nThe clean-up process has been completed.\n");
+	system("pause");
 	return 0;
 }

@@ -4,6 +4,7 @@
 *.o
 *.cpp
 *.txt
+*.cmd
 
 !README.txt
 !main.cpp
